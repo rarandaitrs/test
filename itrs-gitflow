@@ -1,0 +1,373 @@
+#!/bin/bash
+
+#######################################################################################################################
+# This file should _only_ be modified in https://github.com/ITRS-Group/itrs-gitflow
+#######################################################################################################################
+
+set -e
+
+. ./itrs-gitflow-global
+
+print_usage () {
+  echo "itrs-gitflow - A script for creating releases using gitflow"
+  echo
+  echo $"Usage: itrs-gitflow [OPTIONS] release|get-branch-type|next-version|current-version"
+  echo
+  echo "Commands:"
+  echo
+  echo "release start    Create a new release from the develop branch"
+  echo "release hotfix   Create a new hotfix from the master branch"
+  echo "release finish   Finish a release from a release or hotfix branch"
+  echo "release abort    Delete a release or hofix branch"
+  echo "get-branch-type   Outputs the current branch type"
+  echo "info              Print some info about the branch"
+  echo "next-version      Print the next version"
+  echo "current-version   Print the current version"
+  echo
+  echo "Options:"
+  echo
+  echo "-h  --help          Print some help"
+  echo "-v  --version       Print the version"
+  echo "--major             Marks the next version as major, else it is minor"
+}
+
+get_branch_type() {
+  if [[ "$current_branch" =~ .*develop ]]; then branch_type="develop"
+  elif [[ "$current_branch" =~ .*release/.* ]]; then branch_type="release"
+  elif [[ "$current_branch" =~ .*master ]]; then branch_type="master"
+  elif [[ "$current_branch" =~ .*feature/.* ]]; then branch_type="feature"
+  elif [[ "$current_branch" =~ .*hotfix/.* ]]; then branch_type="hotfix"
+  fi
+}
+
+confirm() {
+  read -p "Are you sure? " -n 1 -r
+  echo    # (optional) move to a new line
+  if [[ ! $REPLY =~ ^[Yy]$ ]]
+  then
+      exit 1
+  fi
+}
+
+set_version() {
+  # Perhaps this should be another script?
+  local new_version=$1
+  local message=$2
+
+  ./itrs-gitflow-setversion "$new_version" "$message"
+}
+
+assert_valid_branch_type() {
+  if [ "$branch_type" == "" ]; then
+    echo "Invalid branch type"
+    exit 1
+  fi
+}
+
+assert_is_snapshot() {
+  if [ "$snapshot" != "true" ]; then
+    echo "The version must be a snaphot version"
+    exit 1
+  fi
+}
+
+assert_not_snapshot() {
+  if [ "$snapshot" == "true" ]; then
+    echo "The version must not be a snaphot version"
+    exit 1
+  fi
+}
+
+asssert_branch_type() {
+  local required_branch_type=$1
+
+  if [ "$branch_type" != "$required_branch_type" ]; then
+    echo "The branch type is not correct $branch_type != $required_branch_type"
+    exit 1
+  fi
+}
+
+asssert_branch_type_one_of() {
+  local required_branch_type1=$1
+  local required_branch_type2=$2
+
+  if [ "$branch_type" != "$required_branch_type1" ] && [ "$branch_type" != "$required_branch_type2" ]; then
+    echo "The branch type is not correct $branch_type is not $required_branch_type1 or $required_branch_type2"
+    exit 1
+  fi
+}
+
+assert_branch_clean() {
+  if output=$(git status --porcelain) && [ ! -z "$output" ]; then
+    echo "There are local changes, branch must be clean"
+    exit 1
+  fi
+}
+
+update_git() {
+  # Jenkins tends to configure git to just make the 'current' branch visible. This should override that
+  git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/*
+  git fetch --all
+  git pull
+}
+
+next_major_version() {
+  local next_major=$major
+  local next_minor=$minor
+  local next_patch=$patch
+
+  next_major="$((major+1))"
+  next_minor=0
+  next_patch=0
+
+  echo "$next_major.$next_minor.$next_patch-SNAPSHOT"
+}
+
+next_minor_version() {
+  local next_major=$major
+  local next_minor=$minor
+  local next_patch=$patch
+
+  next_minor="$((minor+1))"
+
+  echo "$next_major.$next_minor.$next_patch-SNAPSHOT"
+}
+
+next_patch_version() {
+  local next_major=$major
+  local next_minor=$minor
+  local next_patch=$patch
+
+  next_patch="$((patch+1))"
+
+  echo "$next_major.$next_minor.$next_patch-SNAPSHOT"
+}
+
+get_next_version() {
+  local next_version=""
+  if [ "$major_version" = "true" ]; then
+    next_version=$(next_major_version)
+  else
+    next_version=$(next_minor_version)
+  fi
+  echo $next_version
+}
+
+start_release() {
+  update_git
+
+  get_branch_type
+  echo "The branch $current_branch is of type '$branch_type'"
+  assert_valid_branch_type
+  assert_is_snapshot
+  asssert_branch_type "develop"
+  assert_branch_clean
+
+  local next_version=""
+  next_version=$(get_next_version)
+
+  local release_branch="release/$major.$minor.$patch"
+
+  echo "Current source version is   $source_version"
+  echo "New version is              $next_version"
+  echo "Creating branch             $release_branch"
+
+  # Create the new release branch
+  git checkout develop
+  git pull
+  git checkout -b "$release_branch"
+  git push origin HEAD
+  git push --set-upstream origin "$release_branch"
+
+  # Update the version in develop
+  git checkout develop
+  git pull
+  set_version "$next_version"
+  git push --set-upstream origin develop
+
+  # Switch back to the release branch
+  git checkout "$release_branch"
+  git pull
+}
+
+start_hotfix() {
+  update_git
+
+  get_branch_type
+  echo "The branch $current_branch is of type '$branch_type'"
+  assert_valid_branch_type
+  assert_not_snapshot
+  asssert_branch_type "master"
+  assert_branch_clean
+
+  local next_version=""
+  next_version=$(next_patch_version)
+  local next_patch="$((patch+1))"
+  local release_branch="hotfix/$major.$minor.$next_patch"
+
+  echo "Current source version is   $source_version"
+  echo "New version is              $next_version"
+  echo "Creating branch             $release_branch"
+
+  # Create the new release branch
+  git checkout -b "$release_branch"
+  set_version "$next_version"
+  git push origin HEAD
+  git push --set-upstream origin "$release_branch"
+}
+
+finish_release() {
+  update_git
+
+  get_branch_type
+  echo "The branch $current_branch is of type '$branch_type'"
+  assert_valid_branch_type
+  assert_is_snapshot
+  asssert_branch_type_one_of "release" "hotfix"
+  assert_branch_clean
+
+  branch_vesion=$(echo $current_branch | awk -F'/' '{print $2}')
+
+  echo "Finishing $current_branch, branch version is $branch_vesion"
+
+  # Set the version to the release version
+  set_version "$branch_vesion"
+
+  # Merge release branch to master Tag and push
+  git checkout master
+  git pull
+  git merge "$current_branch"
+  git tag "$branch_vesion"
+  git push --set-upstream origin master
+  git push --tags
+
+  # Update versions in develop to avoid conflicts
+  git checkout develop
+  git pull
+  local next_version=$(cat VERSION)
+  set_version "$branch_vesion" "Conflict avoidance part 1, temporarily set the version to $branch_vesion"
+  git push --set-upstream origin develop
+
+  # Merge release into develop
+  echo "Merging $current_branch to develop"
+  git merge --no-edit "$current_branch"
+  git push --set-upstream origin develop
+
+  # Reset the version number
+  set_version "$next_version" "Conflict avoidance part 2, set the version back to $next_version"
+  git push --set-upstream origin develop
+
+  # Delete the branch
+  echo "Deleting $current_branch"
+  git branch -D $current_branch
+  git push origin --delete $current_branch
+
+  # As the purpose was to update master, put us back on this branch
+  git checkout master
+}
+
+abort_release() {
+  get_branch_type
+  echo "The branch $current_branch is of type '$branch_type'"
+  assert_valid_branch_type
+  asssert_branch_type_one_of "release" "hotfix"
+  assert_branch_clean
+
+  confirm
+
+  branch_vesion=$(echo $current_branch | awk -F'/' '{print $2}')
+
+  echo "Aborting $current_branch reseting to $branch_vesion"
+
+  git checkout develop
+  git branch -D $current_branch
+  git push origin --delete $current_branch
+
+  if [ "$branch_type" = "release" ]; then
+    set_version "$branch_vesion-SNAPSHOT"
+  fi
+}
+
+info() {
+  get_branch_type
+  echo "The branch $current_branch is of type '$branch_type'"
+}
+
+print_next_version() {
+  get_branch_type
+
+  local next_version=""
+  if [ "$branch_type" = "master" ]; then
+    next_version=$(next_patch_version)
+  else
+    next_version=$(get_next_version)
+  fi
+
+  echo "${next_version%-SNAPSHOT}"
+}
+
+print_current_version() {
+  echo "$major.$minor.$patch"
+}
+
+major_version=false
+
+while [[ $# -gt 0 ]]; do
+key="$1"
+case $key in
+    --major)
+      major_version=true; shift;
+    ;;
+    --help|-h)
+      print_usage
+      exit 0
+    ;;
+    --version|-v)
+      echo $itrs_gitflow_version
+      exit 0
+    ;;
+    *)
+      commands+=($1); shift;
+    ;;
+esac
+done
+
+case ${commands[0]} in
+    release)
+      case ${commands[1]} in
+         start)
+          start_release
+        ;;
+        hotfix)
+          start_hotfix
+        ;;
+        finish)
+          finish_release
+        ;;
+        abort)
+          abort_release
+        ;;
+        *)
+          print_usage
+          exit 1
+        ;;
+      esac
+    ;;
+    get-branch-type)
+      get_branch_type $current_branch
+      echo $branch_type
+    ;;
+    info)
+      info
+    ;;
+    next-version)
+      print_next_version
+    ;;
+    current-version)
+      print_current_version
+    ;;
+    *)
+      print_usage
+      exit 1
+    ;;
+esac

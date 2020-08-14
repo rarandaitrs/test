@@ -1,0 +1,62 @@
+#!/bin/bash
+
+#######################################################################################################################
+# This file should _only_ be modified in https://github.com/ITRS-Group/itrs-gitflow
+#######################################################################################################################
+
+set -e
+
+assert_version_exists() {
+  if [ ! -f VERSION ]; then
+    echo "Missing VERSION file!"
+    exit 1
+  fi
+}
+
+assert_version_exists
+
+# The version of these scripts
+export itrs_gitflow_version="1.1.0"
+
+export source_version=$(cat VERSION)
+export revision=$(git rev-parse --short HEAD)
+export date=$(date +%Y%m%d)
+export current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+source_version_numbers=${source_version%-SNAPSHOT}
+version_array=( ${source_version_numbers//./ } )
+
+export major=${version_array[0]}
+export minor=${version_array[1]}
+export patch=${version_array[2]}
+
+export snapshot="false"
+if [[ $source_version == *"SNAPSHOT"* ]]; then
+  export snapshot="true"
+  export version="$source_version-$date-$revision"
+else
+  export version="$source_version"
+fi
+
+if [ "$snapshot" == "true" ]; then
+  export repo=libs-snapshot-local
+else
+  export repo=libs-release-local
+fi
+
+if [ "$DEBUG" = true ]; then
+  echo "############################################################"
+  echo "# Global variables"
+  echo "############################################################"
+  echo "source_version=$source_version"
+  echo "major=$major"
+  echo "minor=$minor"
+  echo "patch=$patch"
+  echo "snapshot=$snapshot"
+  echo "version=$version"
+  echo "current_branch=$current_branch"
+  echo "revision=$revision"
+  echo "date=$date"
+  echo "repo=$repo"
+  echo "############################################################"
+fi

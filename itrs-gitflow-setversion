@@ -1,0 +1,27 @@
+#!/bin/bash
+
+#######################################################################################################################
+# This file should _only_ be modified in https://github.com/ITRS-Group/itrs-gitflow
+#######################################################################################################################
+
+set -e
+
+new_version=$1
+message=$2
+
+# If no message is supplied, create one
+if [ "$message" = "" ]; then
+  message="Updated the version to $new_version"
+fi
+
+# Update the main VERSION file
+printf %s "$new_version" > VERSION
+
+# If this is a maven project, updte the poms
+if test -f "pom.xml"; then
+  mvn versions:set -DnewVersion="$new_version" -DgenerateBackupPoms=false
+fi
+
+# Commit the changes
+git add .
+git commit -m "$message"
